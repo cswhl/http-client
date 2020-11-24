@@ -1,8 +1,38 @@
 #!/usr/bin/python3
 
+
+import sys
+import re
 import socket
+import unittest
 from urllib.parse import urlparse
 from http.client import HTTP_PORT, HTTPS_PORT
+from urllib.error import URLError
+
+
+class HttpConst(object):
+    '''常量类'''
+
+    CRLF = '\r\n'
+    CR = 13
+    LF = 10
+    # keep space, for split
+    GET = 'GET '
+    POST = 'POST '
+    HOST = 'Host: '
+
+
+def validate_url(argv):
+    '''判断url是否合法'''
+
+    if len(argv) != 2:
+        print(sys.stderr, 'URL Required')
+        sys.exit(-1)
+
+    url = argv[1]
+    if not re.match(r'^https?:/{2}\w.+$', url):
+        raise URLError('URL is unavailable')
+    return True
 
 
 class HttpURL(object):
@@ -30,6 +60,26 @@ class HttpURL(object):
     def _default_port(self, protocol):
         return HTTP_PORT if self.protocol == 'http' else HTTPS_PORT
 
+
+def request_packet(url: HttpURL):  # noqa
+    '''拼接http请求'''
+
+    request = ''
+
+    # constructor rquest line
+    request += HttpConst.GET + url.path + 'HTTP/1.1' + ' '
+    request += HttpConst.CRLF
+
+    # header
+    request += HttpConst.HOST + url.host
+    request += HttpConst.CRLF
+
+    # space line
+    request += HttpConst.CRLF
+
+    # body
+
+    return request
 
 # 1.创建tcp套接字
 # 2.创建http协议- 请求报文
@@ -61,9 +111,6 @@ sock = socket.socket()
 port = 80
 host = 'httpbin.org'
 
-# ff
-# port =  80
-# host = 'developer.mozilla.org'
 
 addresock = host, port
 sock.settimeout(3)
@@ -116,3 +163,34 @@ while True:
     break
 
 sock.close()  # 会向服务发送b''，服务器接收到就会关闭连接'
+
+
+class TestUrl(unittest.TestCase):
+    '''测试用例'''
+
+    def test_validate_url(self):
+        '''测试validate_url函数'''
+        self.assertTrue(validate_url(['', 'https://docs.python.org/']))
+        self.assertRaises(URLError, validate_url, ['', '://docs.pyhton/'])
+        self.assertRaises(SystemExit, validate_url, [''])
+
+    def test_HttpURL(self):
+        '''测试URL构造对象'''
+        url = 'https://httpbin.org/'
+        url = HttpURL(url)
+        self.assertEqual(url.protocol, 'https')
+        self.assertEqual(url.path, '/')
+        self.assertEqual(url.host, 'httpbin.org')
+        self.assertEqual(url.port, HTTPS_PORT)
+
+    def test_request_packet(self):
+        '''测试url拼接'''
+        url = 'https://httpbin.org/'
+        result = 'GET /HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n'
+        self.assertEqual(request_packet(HttpURL(url)), result)
+
+
+
+
+if __name__ == '__main__':
+    unittest.main()
