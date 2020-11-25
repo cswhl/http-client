@@ -10,6 +10,10 @@ from http.client import HTTP_PORT, HTTPS_PORT
 from urllib.error import URLError
 
 
+class RecvErr(Exception):
+    pass
+
+
 class HttpConst(object):
     '''常量类'''
 
@@ -67,7 +71,7 @@ def request_packet(url: HttpURL):  # noqa
     request = ''
 
     # constructor rquest line
-    request += HttpConst.GET + url.path + 'HTTP/1.1' + ' '
+    request += HttpConst.GET + url.path + ' ' + 'HTTP/1.1' + ' '
     request += HttpConst.CRLF
 
     # header
@@ -81,116 +85,155 @@ def request_packet(url: HttpURL):  # noqa
 
     return request
 
-# 1.创建tcp套接字
-# 2.创建http协议- 请求报文
-# htpp请求行
-# data = 'GET / HTTP/1.1\r\n'
-data = 'GET / HTTP/1.1\r\n'
-# http请求头
-data += 'Host: httpbin.org\r\n'
-# data += 'Host:www.baidu.com\r\n'
-# data = 'GET /en-US/docs/Web/HTTP/Headers/Transfer-Encoding HTTP/1.1\r\n'
-# data += 'Host: developer.mozilla.org\r\n'
-# data += 'Transfer-Encoding: chunked\r\n'
-# 空行
-data += '\r\n\r\n'
-# http请求体
 
+class HttpClient(object):
+    '''客户端'''
 
-# 样板代码
-sock = socket.socket()
-
-# port = 8888
-# host = 'localhost'
-
-# baidu
-# port = 443
-# host = '14.215.177.39'
-
-# httpbin
-port = 80
-host = 'httpbin.org'
-
-
-addresock = host, port
-sock.settimeout(3)
-sock.connect(addresock)
-
-
-def head_to_map(headLines):
-    # 将响应头转换字典
-
-    header_map = {}
-    for header in header_lines[1:]:
-        if ';' in header:
-            # 处理多个消息头共处一行的情况
-            headers = header.split(';')
-            for header in headers:
-                cc = header.strip().split(': ') if ':' in header else header.strip().split('=')  # noqa
-                header_map.update([cc])
-            continue
-        header_map.update([header.split(': ')])
-
-    return header_map
-
-
-def get_res_body(body, content_length):
-    body_length = len(body)
-    while body_length < content_length:
+    def __init__(self, addresses: tuple):
+        self.sock = socket.socket()
+        self.sock.settimeout(3)
         try:
-            rev = sock.recv(1024).decode('utf-8')
-        except socket.timeout as res:
-            print(f'sock.recv接受数据超时---"Error:{res}"')  # noqa
-        body += rev
-        body_length += len(rev)
-    return body
+            self.sock.connect(addresses)
+        except socket.error as ret:
+            print(f'web服务器地址错误{ret}')
+            sys.exit(-1)
+
+    def send(self, http_request: str):
+        '''发送http报文请求'''
+        request = Request(self.sock, http_request)
+        request.send_request()
+        self.recv()
+
+    def recv(self):
+        '''接受http报文响应'''
+        try:
+            response = Response(self.sock)
+            response.get_all()
+            print(response.head)
+            print(response.body)
+        except RecvErr as res:
+            print(f'client.recv错误--{res}')
 
 
-while True:
-    sock.send(data.encode('utf-8'))
-    rev = sock.recv(1024).decode('utf-8')
-    head, body = rev.split('\r\n\r\n')
-    header_lines = head.split('\r\n')
-    request_line = header_lines[0]
-    header_map = head_to_map(header_lines[1:])
-    content_length = int(header_map.get('Content-Length', 0))
+class Request(object):
+    '''报文请求'''
 
-    body = get_res_body(body, content_length)
+    def __init__(self, sock, http_request: str):
+        self.sock = sock
+        self.http_request = http_request
 
-    # print(head)
-    # print(body)
+    def send_request(self):
+        # 发送一般请求
+        self.sock.send(self.http_request.encode('utf-8'))
 
-    break
+    def redirect_request(self):
+        # 重定位请求
+        pass
 
-sock.close()  # 会向服务发送b''，服务器接收到就会关闭连接'
+    def https_request(self):
+        # https请求, 带ssl
+        pass
+
+
+class Response(object):
+    '''处理响应的报文'''
+
+    def __init__(self, sock):
+        self.sock = sock
+        # 获取响应报文的首帧数据
+        try:
+            rev = self.sock.recv(1024).decode('utf-8')
+            self.head, self.body = rev.split('\r\n\r\n')
+            self.header_lines = self.head.split('\r\n')
+        except socket.error as res:
+            print(f'报文响应接受数据错误:{res}')
+            raise RecvErr('接受数据错误')
+        except BaseException as res:
+            print(f'报文响应实例初始化时错误:{res}')
+            raise RecvErr('接受数据错误')
+
+    def get_all(self):
+        self.get_line()
+        self.get_header_map()
+        self.get_body()
+
+    def get_line(self):
+        # 获取响应行
+        self.request_line = self.header_lines[0]
+
+    def get_header_map(self):
+        # 获取响应头对应的map
+        header_map = {}
+        for header in self.header_lines[1:]:
+            if ';' in header:
+                # 处理多个消息头共处一行的情况
+                headers = header.split(';')
+                for header in headers:
+                    cc = header.strip().split(': ') if ':' in header else header.strip().split('=')  # noqa
+                    header_map.update([cc])
+                continue
+            header_map.update([header.split(': ')])
+        self.header_map = header_map
+
+    def get_body(self):
+        # 获取响应体
+        content_length = int(self.header_map.get('Content-Length', 0))
+        if content_length:
+            self._read_content_length(content_length)
+        else:
+            self._read_chunker()
+
+    def _read_content_length(self, content_length):
+        # 获取content-Length响应体
+        body_length = len(self.body)
+        while body_length < content_length:
+            try:
+                rev = self.sock.recv(1024).decode('utf-8')
+            except socket.timeout as res:
+                print(f'sock.recv接受数据超时---"Error:{res}"')  # noqa
+            self.body += rev
+            body_length += len(rev)
+
+    def _read_chunker(self):
+        # 获取分块编码形式的响应体
+        pass
 
 
 class TestUrl(unittest.TestCase):
     '''测试用例'''
+    url = 'https://httpbin.org/'
+    result = 'GET / HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n'
 
     def test_validate_url(self):
-        '''测试validate_url函数'''
-        self.assertTrue(validate_url(['', 'https://docs.python.org/']))
+        '''1 测试validate_url函数'''
+        self.assertTrue(validate_url(['', self.url]))
         self.assertRaises(URLError, validate_url, ['', '://docs.pyhton/'])
         self.assertRaises(SystemExit, validate_url, [''])
 
     def test_HttpURL(self):
-        '''测试URL构造对象'''
-        url = 'https://httpbin.org/'
-        url = HttpURL(url)
+        '''2 测试URL构造对象'''
+        url = HttpURL(self.url)
         self.assertEqual(url.protocol, 'https')
         self.assertEqual(url.path, '/')
         self.assertEqual(url.host, 'httpbin.org')
         self.assertEqual(url.port, HTTPS_PORT)
 
     def test_request_packet(self):
-        '''测试url拼接'''
-        url = 'https://httpbin.org/'
-        result = 'GET /HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n'
-        self.assertEqual(request_packet(HttpURL(url)), result)
+        '''3 测试url拼接'''
+        self.assertEqual(request_packet(HttpURL(self.url)), self.result)
 
+    def test_client(self):
+        '''4 测试http客户端创建'''
+        self.assertRaises(SystemExit, HttpClient, ('httpbin.or', 443))
+        client = HttpClient(('httpbin.org', 80))
+        self.assertIsInstance(client, HttpClient)
+        client.sock.close()
 
+    def tearDown(self):
+        pass
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # unittest.main()
+    client = HttpClient(('httpbin.org', 80))
+    client.send('GET / HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n')
