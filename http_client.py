@@ -35,6 +35,7 @@ def validate_url(argv):
 
     url = argv[1]
     if not re.match(r'^https?:/{2}\w.+$', url):
+        print('url地址不合法')
         raise URLError('URL is unavailable')
     return True
 
@@ -64,47 +65,48 @@ class HttpURL(object):
     def _default_port(self, protocol):
         return HTTP_PORT if self.protocol == 'http' else HTTPS_PORT
 
+    @property
+    def request_packet(self):  # noqa
+        '''拼接http请求'''
 
-def request_packet(url: HttpURL):  # noqa
-    '''拼接http请求'''
+        request = ''
 
-    request = ''
+        # constructor rquest line
+        request += HttpConst.GET + self.path + ' ' + 'HTTP/1.1' + ' '
+        request += HttpConst.CRLF
 
-    # constructor rquest line
-    request += HttpConst.GET + url.path + ' ' + 'HTTP/1.1' + ' '
-    request += HttpConst.CRLF
+        # header
+        request += HttpConst.HOST + self.host
+        request += HttpConst.CRLF
 
-    # header
-    request += HttpConst.HOST + url.host
-    request += HttpConst.CRLF
+        # space line
+        request += HttpConst.CRLF
 
-    # space line
-    request += HttpConst.CRLF
+        # body
 
-    # body
-
-    return request
+        return request
 
 
 class HttpClient(object):
     '''客户端'''
 
-    def __init__(self, addresses: tuple):
+    def __init__(self, url: HttpURL):
         self.sock = socket.socket()
         self.sock.settimeout(3)
         try:
+            addresses = url.host, url.port
             self.sock.connect(addresses)
         except socket.error as ret:
             print(f'web服务器地址错误{ret}')
             sys.exit(-1)
+        self.url = url
 
-    def send(self, http_request: str):
+    def __send(self):
         '''发送http报文请求'''
-        request = Request(self.sock, http_request)
+        request = Request(self.sock, self.url.request_packet)
         request.send_request()
-        self.recv()
 
-    def recv(self):
+    def __recv(self):
         '''接受http报文响应'''
         try:
             response = Response(self.sock)
@@ -113,6 +115,10 @@ class HttpClient(object):
             print(response.body)
         except RecvErr as res:
             print(f'client.recv错误--{res}')
+
+    def run(self):
+        self.__send()
+        self.__recv()
 
 
 class Request(object):
@@ -220,7 +226,8 @@ class TestUrl(unittest.TestCase):
 
     def test_request_packet(self):
         '''3 测试url拼接'''
-        self.assertEqual(request_packet(HttpURL(self.url)), self.result)
+        url = HttpURL(self.url)
+        self.assertEqual(url.request_packet, self.result)
 
     def test_client(self):
         '''4 测试http客户端创建'''
@@ -233,7 +240,13 @@ class TestUrl(unittest.TestCase):
         pass
 
 
+def main():
+    if validate_url(sys.argv):
+        url = HttpURL(sys.argv[-1])
+        client = HttpClient(url)
+        client.run()
+
+
 if __name__ == '__main__':
     # unittest.main()
-    client = HttpClient(('httpbin.org', 80))
-    client.send('GET / HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n')
+    main()
