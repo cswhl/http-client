@@ -4,10 +4,12 @@
 import sys
 import re
 import socket
+import ssl
 import unittest
 from urllib.parse import urlparse
 from http.client import HTTP_PORT, HTTPS_PORT
 from urllib.error import URLError
+from abc import ABC, abstractmethod
 
 
 class RecvErr(Exception):
@@ -34,7 +36,7 @@ def validate_url(argv):
         sys.exit(-1)
 
     url = argv[1]
-    if not re.match(r'^https?:/{2}\w.+$', url):
+    if not re.match(r'^https?:/{2}\w.+$', url.strip()):
         print('url地址不合法')
         raise URLError('URL is unavailable')
     return True
@@ -44,7 +46,7 @@ class HttpURL(object):
     '''构造url对象'''
 
     def __init__(self, url):
-        self._url = urlparse(url)
+        self._url = urlparse(url.strip())
 
     @property
     def protocol(self):
@@ -70,18 +72,14 @@ class HttpURL(object):
         '''拼接http请求'''
 
         request = ''
-
         # constructor rquest line
         request += HttpConst.GET + self.path + ' ' + 'HTTP/1.1' + ' '
         request += HttpConst.CRLF
-
         # header
         request += HttpConst.HOST + self.host
         request += HttpConst.CRLF
-
         # space line
         request += HttpConst.CRLF
-
         # body
 
         return request
@@ -91,7 +89,7 @@ class HttpClient(object):
     '''客户端'''
 
     def __init__(self, url: HttpURL):
-        self.sock = socket.socket()
+        self.sock = socket.socket() if url.protocol == 'http' else ssl.wrap_socket(socket.socket()) # noqa
         self.sock.settimeout(3)
         try:
             addresses = url.host, url.port
@@ -101,27 +99,36 @@ class HttpClient(object):
             sys.exit(-1)
         self.url = url
 
-    def __send(self):
-        '''发送http报文请求'''
+    def __send(self, Request):
+        '''发送请求'''
         request = Request(self.sock, self.url.request_packet)
         request.send_request()
 
-    def __recv(self):
-        '''接受http报文响应'''
+    def __recv(self, Response):
+        '''接受响应'''
         try:
-            response = Response(self.sock)
-            response.get_all()
-            print(response.head)
-            print(response.body)
+            self.response = Response(self.sock)
+            self.response.get_all()
+            # print(self.response.head)
+            # print(response.body)
         except RecvErr as res:
             print(f'client.recv错误--{res}')
 
-    def run(self):
-        self.__send()
-        self.__recv()
+    def run(self, Request, Response):
+        self.__send(Request)
+        self.__recv(Response)
+
+    def stop(self):
+        self.sock.close()
 
 
-class Request(object):
+class Request(ABC):
+    @abstractmethod
+    def send_request(self):
+        pass
+
+
+class HttpRequest(Request):
     '''报文请求'''
 
     def __init__(self, sock, http_request: str):
@@ -129,19 +136,16 @@ class Request(object):
         self.http_request = http_request
 
     def send_request(self):
-        # 发送一般请求
         self.sock.send(self.http_request.encode('utf-8'))
 
-    def redirect_request(self):
-        # 重定位请求
+
+class Response(ABC):
+    @abstractmethod
+    def get_all(self):
         pass
 
-    def https_request(self):
-        # https请求, 带ssl
-        pass
 
-
-class Response(object):
+class HttpResponse(Response):
     '''处理响应的报文'''
 
     def __init__(self, sock):
@@ -149,7 +153,9 @@ class Response(object):
         # 获取响应报文的首帧数据
         try:
             rev = self.sock.recv(1024).decode('utf-8')
-            self.head, self.body = rev.split('\r\n\r\n')
+            # print(rev)
+            # [:2]防止响应报文含不只一个'\r\n\r\n'
+            self.head, self.body = rev.split('\r\n\r\n')[:2]
             self.header_lines = self.head.split('\r\n')
         except socket.error as res:
             print(f'报文响应接受数据错误:{res}')
@@ -171,13 +177,6 @@ class Response(object):
         # 获取响应头对应的map
         header_map = {}
         for header in self.header_lines[1:]:
-            if ';' in header:
-                # 处理多个消息头共处一行的情况
-                headers = header.split(';')
-                for header in headers:
-                    cc = header.strip().split(': ') if ':' in header else header.strip().split('=')  # noqa
-                    header_map.update([cc])
-                continue
             header_map.update([header.split(': ')])
         self.header_map = header_map
 
@@ -203,6 +202,27 @@ class Response(object):
     def _read_chunker(self):
         # 获取分块编码形式的响应体
         pass
+
+
+def main():
+    if not validate_url(sys.argv): return
+
+    url = HttpURL(sys.argv[-1])
+    client = HttpClient(url)
+    client.run(HttpRequest, HttpResponse)
+    try:
+        url = HttpURL(client.response.header_map['Location'])
+        try:
+            if client.response.header_map['Connection'] == 'close':
+                # 服务器断开连接，则关闭客户端后重开一个客户端
+                client.stop()
+                client = HttpClient(url)
+            client.run(HttpRequest, HttpResponse)
+        except KeyError as ret:
+            print(ret)
+    except KeyError as ret:
+        print(f'ret={ret}')
+
 
 
 class TestUrl(unittest.TestCase):
@@ -239,12 +259,6 @@ class TestUrl(unittest.TestCase):
     def tearDown(self):
         pass
 
-
-def main():
-    if validate_url(sys.argv):
-        url = HttpURL(sys.argv[-1])
-        client = HttpClient(url)
-        client.run()
 
 
 if __name__ == '__main__':
