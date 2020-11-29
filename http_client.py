@@ -89,8 +89,8 @@ class HttpClient(object):
     '''客户端'''
 
     def __init__(self, url: HttpURL):
-        self.sock = socket.socket() if url.protocol == 'http' else ssl.wrap_socket(socket.socket()) # noqa
-        self.sock.settimeout(3)
+        self.sock = socket.socket() if url.protocol == 'http' else ssl.wrap_socket(socket.socket())  # noqa
+        self.sock.settimeout(5)
         try:
             addresses = url.host, url.port
             self.sock.connect(addresses)
@@ -109,8 +109,9 @@ class HttpClient(object):
         try:
             self.response = Response(self.sock)
             self.response.get_all()
-            # print(self.response.head)
-            # print(response.body)
+            print('\n')
+            print(self.response.head)
+            print(self.response.body)
         except RecvErr as res:
             print(f'client.recv错误--{res}')
 
@@ -150,12 +151,15 @@ class HttpResponse(Response):
 
     def __init__(self, sock):
         self.sock = sock
+        rev = b''
         # 获取响应报文的首帧数据
+        while b'\r\n\r\n' not in rev:
+            rev += self.sock.recv(1024)  # .decode('utf-8')
+
         try:
-            rev = self.sock.recv(1024).decode('utf-8')
-            # print(rev)
             # [:2]防止响应报文含不只一个'\r\n\r\n'
-            self.head, self.body = rev.split('\r\n\r\n')[:2]
+            self.head, self.body = rev.split(b'\r\n\r\n')[:2]
+            self.head = self.head.decode('utf-8')
             self.header_lines = self.head.split('\r\n')
         except socket.error as res:
             print(f'报文响应接受数据错误:{res}')
@@ -182,30 +186,34 @@ class HttpResponse(Response):
 
     def get_body(self):
         # 获取响应体
-        content_length = int(self.header_map.get('Content-Length', 0))
-        if content_length:
-            self._read_content_length(content_length)
-        else:
-            self._read_chunker()
+        try:
+            if self.header_map['Transfer-Encoding'] == 'chunked':
+                self._read_chunked()
+        except KeyError as ret:
+            self._read_content_length()
+            print(f'fun get_body error={ret}')
 
-    def _read_content_length(self, content_length):
+    def _read_content(self):
+        try:
+            rev = self.sock.recv(1024)  # .decode('utf-8')
+            while rev:
+                self.body += rev
+                rev = self.sock.recv(1024)  # .decode('utf-8')
+        except socket.timeout as res:
+            print(f'sock.recv接受数据超时---"Error:{res}"')  # noqa
+
+    def _read_content_length(self):
         # 获取content-Length响应体
-        body_length = len(self.body)
-        while body_length < content_length:
-            try:
-                rev = self.sock.recv(1024).decode('utf-8')
-            except socket.timeout as res:
-                print(f'sock.recv接受数据超时---"Error:{res}"')  # noqa
-            self.body += rev
-            body_length += len(rev)
+        self._read_content()
 
-    def _read_chunker(self):
+    def _read_chunked(self):
         # 获取分块编码形式的响应体
-        pass
+        self._read_content()
 
 
 def main():
-    if not validate_url(sys.argv): return
+    if not validate_url(sys.argv):
+        return
 
     url = HttpURL(sys.argv[-1])
     client = HttpClient(url)
@@ -222,7 +230,6 @@ def main():
             print(ret)
     except KeyError as ret:
         print(f'ret={ret}')
-
 
 
 class TestUrl(unittest.TestCase):
@@ -258,7 +265,6 @@ class TestUrl(unittest.TestCase):
 
     def tearDown(self):
         pass
-
 
 
 if __name__ == '__main__':
