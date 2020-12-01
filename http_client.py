@@ -73,10 +73,12 @@ class HttpURL(object):
 
         request = ''
         # constructor rquest line
-        request += HttpConst.GET + self.path + ' ' + 'HTTP/1.1' + ' '
+        request += HttpConst.GET + self.path + ' ' + 'HTTP/1.1'
         request += HttpConst.CRLF
         # header
         request += HttpConst.HOST + self.host
+        request += HttpConst.CRLF
+        request += 'Connection: close'
         request += HttpConst.CRLF
         # space line
         request += HttpConst.CRLF
@@ -90,7 +92,7 @@ class HttpClient(object):
 
     def __init__(self, url: HttpURL):
         self.sock = socket.socket() if url.protocol == 'http' else ssl.wrap_socket(socket.socket())  # noqa
-        self.sock.settimeout(5)
+        self.sock.settimeout(3)
         try:
             addresses = url.host, url.port
             self.sock.connect(addresses)
@@ -111,7 +113,7 @@ class HttpClient(object):
             self.response.get_all()
             print('\n')
             print(self.response.head)
-            print(self.response.body)
+            # print(self.response.body)
         except RecvErr as res:
             print(f'client.recv错误--{res}')
 
@@ -181,6 +183,7 @@ class HttpResponse(Response):
         # 获取响应头对应的map
         header_map = {}
         for header in self.header_lines[1:]:
+            print(header)
             header_map.update([header.split(': ')])
         self.header_map = header_map
 
@@ -192,6 +195,18 @@ class HttpResponse(Response):
         except KeyError as ret:
             self._read_content_length()
             print(f'fun get_body error={ret}')
+        # 如果是gzip格式，则需要在此出解压缩
+        # ...
+
+    def _read_content_length(self):
+        # 获取content-Length响应体
+        self._read_content()
+
+    def _read_chunked(self):
+        # 获取分块编码形式的响应体
+        self._read_content()
+        # chunked解码
+        # ...
 
     def _read_content(self):
         try:
@@ -201,14 +216,6 @@ class HttpResponse(Response):
                 rev = self.sock.recv(1024)  # .decode('utf-8')
         except socket.timeout as res:
             print(f'sock.recv接受数据超时---"Error:{res}"')  # noqa
-
-    def _read_content_length(self):
-        # 获取content-Length响应体
-        self._read_content()
-
-    def _read_chunked(self):
-        # 获取分块编码形式的响应体
-        self._read_content()
 
 
 def main():
@@ -235,7 +242,7 @@ def main():
 class TestUrl(unittest.TestCase):
     '''测试用例'''
     url = 'https://httpbin.org/'
-    result = 'GET / HTTP/1.1 \r\nHost: httpbin.org\r\n\r\n'
+    result = 'GET / HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n'
 
     def test_validate_url(self):
         '''1 测试validate_url函数'''
@@ -258,8 +265,10 @@ class TestUrl(unittest.TestCase):
 
     def test_client(self):
         '''4 测试http客户端创建'''
-        self.assertRaises(SystemExit, HttpClient, ('httpbin.or', 443))
-        client = HttpClient(('httpbin.org', 80))
+        url = HttpURL('https://httpbin.or/')
+        self.assertRaises(SystemExit, HttpClient, url)
+        url = HttpURL('http://httpbin.org/')
+        client = HttpClient(url)
         self.assertIsInstance(client, HttpClient)
         client.sock.close()
 
